@@ -57,3 +57,34 @@ class SwiGLU(nn.Module):
         x1 = einops.einsum(self.w1, x, "d_ff d_model, ... d_model -> ... d_ff")
         x3 = einops.einsum(self.w3, x, "d_ff d_model, ... d_model -> ... d_ff")
         return einops.einsum(self.w2, self.silu(x1) * x3, "d_model d_ff, ... d_ff -> ... d_model")
+    
+    
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+        super().__init__()
+        r_all = torch.zeros(max_seq_len, d_k, d_k, device=device)
+        self.register_buffer("r_all", r_all)
+        
+        for i in range(max_seq_len):
+            for k in range(d_k // 2):
+                theta_ik = i / (theta ** (2*k/d_k))
+                c = math.cos(theta_ik)
+                s = math.sin(theta_ik)
+                blk = torch.tensor([
+                    [c, -s],
+                    [s,  c]
+                ], device=device)
+                self.r_all[i, 2*k : 2*k + 2, 2*k : 2*k + 2] = blk
+    
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        # x: batch, seq_len, d_k
+        # token_positions: batch, seq_len
+        r = self.r_all[token_positions]
+        return einops.einsum(r, x, "... max_seq_len i j, ... max_seq_len j -> ... max_seq_len i")
+    
+
+def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
+    maxs = torch.max(x, dim, keepdim=True).values
+    return torch.exp(x - maxs) / torch.sum(torch.exp(x - maxs))
+
+
