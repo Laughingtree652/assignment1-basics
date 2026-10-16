@@ -24,6 +24,7 @@ class Embedding(nn.Module):
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         return self.embeddings[token_ids]
 
+
 class RMSNorm(nn.Module):
     def __init__(self, d_model: int, eps: float=1e-5, device=None, dtype=None):
         super().__init__()
@@ -59,7 +60,7 @@ class SwiGLU(nn.Module):
         return einops.einsum(self.w2, self.silu(x1) * x3, "d_model d_ff, ... d_ff -> ... d_model")
     
     
-class RotaryPositionalEmbedding(nn.Module):
+class RoPE(nn.Module):
     def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
         super().__init__()
         r_all = torch.zeros(max_seq_len, d_k, d_k, device=device)
@@ -88,3 +89,49 @@ def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
     return torch.exp(x - maxs) / torch.sum(torch.exp(x - maxs))
 
 
+def scaled_dot_product_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor=None) -> torch.Tensor:
+    # q: batch, ..., seq_len, d_k
+    # k: batch, ..., seq_len, d_k
+    # v: batch, ..., seq_len, d_v
+    # mask: seq_len, seq_len
+    d_k = q.shape[-1]
+    score = einops.einsum(q, k, "... seq_q d_k, ... seq_k d_k -> ... seq_q seq_k") / math.sqrt(d_k)
+    if mask is not None:
+        score = torch.where(~mask, -torch.inf, score)
+    return einops.einsum(softmax(score, dim=-1), v, "... seq_q seq_k, ... seq_k d_v -> ... seq_q d_v")
+
+
+class CausalMultiHeadSelfAttn(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, theta: float, max_seq_len: int, device=None):
+        super().__init__()
+        # 张量维度必须是int
+        self.d_k = self.d_v = d_model // num_heads
+        self.num_heads = num_heads
+        self.linear_wo = Linear(num_heads * self.d_v, d_model, device=device)
+        self.linear_wq = Linear(d_model, num_heads * self.d_k, device=device)
+        self.linear_wk = Linear(d_model, num_heads * self.d_k, device=device)
+        self.linear_wv = Linear(d_model, num_heads * self.d_v, device=device)
+        self.rope = RoPE(theta, self.d_k, max_seq_len, device=device)
+    
+    def forward(self, x: torch.Tensor,  token_positions: torch.Tensor=None) -> torch.Tensor:
+        # mask: seq_len, seq_len
+        seq_len = x.shape[-2]
+        
+        if token_positions is None:
+            token_positions = torch.arange(seq_len, device=x.device)
+        
+        mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device, dtype=bool))
+        q = self.linear_wq(x)
+        k = self.linear_wk(x)
+        v = self.linear_wv(x)
+        
+        q = einops.rearrange(q, "... seq_len (self.num_heads d_k) -> ... self.num_heads seq_len d_k")
+        k = einops.rearrange(k, "... seq_len (self.num_heads d_k) -> ... self.num_heads seq_len d_k")
+        v = einops.rearrange(v, "... seq_len (self.num_heads d_v) -> ... self.num_heads seq_len d_v")
+        
+        # apply rope
+        q = self.rope(q, token_positions)
+        k = self.rope(k, token_positions)
+        
+        multi_head = einops.rearrange(scaled_dot_product_attention(q, k, v, mask), "... self.num_heads seq_len d_v -> ... seq_len (self.num_heads d_v)")
+        return self.linear_wo(multi_head)
