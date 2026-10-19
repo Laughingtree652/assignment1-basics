@@ -39,9 +39,10 @@ class RMSNorm(nn.Module):
     
 
 class SwiGLU(nn.Module):
-    def __init__(self, d_model: int, device=None, dtype=None):
+    def __init__(self, d_model: int, d_ff: int=None, device=None, dtype=None):
         super().__init__()
-        d_ff = math.ceil(8/3 * d_model / 64) * 64
+        if d_ff is None:
+            d_ff = math.ceil(8/3 * d_model / 64) * 64
         self.w1 = nn.Parameter(torch.empty((d_ff, d_model), device=device, dtype=dtype))
         self.w2 = nn.Parameter(torch.empty((d_model, d_ff), device=device, dtype=dtype))
         self.w3 = nn.Parameter(torch.empty((d_ff, d_model), device=device, dtype=dtype))
@@ -85,6 +86,7 @@ class RoPE(nn.Module):
     
 
 def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
+    # dim: 沿哪一维做（seq_len) 那维
     maxs = torch.max(x, dim, keepdim=True).values
     return torch.exp(x - maxs) / torch.sum(torch.exp(x - maxs))
 
@@ -135,3 +137,31 @@ class CausalMultiHeadSelfAttn(nn.Module):
         
         multi_head = einops.rearrange(scaled_dot_product_attention(q, k, v, mask), "... self.num_heads seq_len d_v -> ... seq_len (self.num_heads d_v)")
         return self.linear_wo(multi_head)
+    
+
+class TransformerBlock(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, theta: float, max_seq_len: int, device=None, dtype=None):
+        super().__init__()
+        self.rmsnorm1 = RMSNorm(d_model=d_model, device=device, dtype=dtype)
+        self.rmsnorm2 = RMSNorm(d_model=d_model, device=device, dtype=dtype)
+        self.mha = CausalMultiHeadSelfAttn(d_model=d_model, num_heads=num_heads, theta=theta, max_seq_len=max_seq_len, device=device)
+        self.swiglu = SwiGLU(d_model=d_model, d_ff=d_ff, device=device, dtype=dtype)
+        
+    def forward(self, x: torch.Tensor):
+        y = x + self.mha(self.rmsnorm1(x))
+        return y + self.swiglu(self.rmsnorm2(y))
+
+
+class TransformerLm(nn.Module):
+    def __init__(self, vocab_size: int, context_length: int, num_layers: int, d_model: int, num_heads: int, d_ff: int, theta: float, device=None, dtype=None):
+        super().__init__()
+        self.embedding = Embedding(num_embeddings=vocab_size, embedding_dim=d_model, device=device, dtype=dtype)
+        self.layers = nn.ModuleList([TransformerBlock(d_model=d_model, num_heads=num_heads, d_ff=d_ff, theta=theta, max_seq_len=context_length, device=device, dtype=dtype) for i in range(num_layers)])
+        self.norm = RMSNorm(d_model=d_model, device=device, dtype=dtype)
+        self.linear = Linear(in_features=d_model, out_features=vocab_size, device=device, dtype=dtype)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.embedding(x)
+        for _, l in enumerate(self.layers):
+            y = l(y)
+        return self.linear(self.norm(y))
