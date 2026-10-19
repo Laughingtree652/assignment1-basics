@@ -88,7 +88,7 @@ class RoPE(nn.Module):
 def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
     # dim: 沿哪一维做（seq_len) 那维
     maxs = torch.max(x, dim, keepdim=True).values
-    return torch.exp(x - maxs) / torch.sum(torch.exp(x - maxs))
+    return torch.exp(x - maxs) / torch.sum(torch.exp(x - maxs), dim, keepdim=True)
 
 
 def scaled_dot_product_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor=None) -> torch.Tensor:
