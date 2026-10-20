@@ -1,3 +1,5 @@
+from collections.abc import Callable, Iterable
+from typing import Optional
 import torch
 import torch.nn as nn
 import einops
@@ -198,7 +200,51 @@ def transformer_accounting(vocab_size: int, context_length: int, num_layers: int
     print("flops - estimate: ", flops - estimate)
 
 
+def cross_entropy(o: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    # o: ..., vocab_size
+    # x: ...
+    maxs = torch.max(o, dim=-1, keepdim=True).values
+    y = x.unsqueeze(-1)
+    o_x = torch.gather(o, dim=-1, index=y)
+    return torch.mean(torch.log(torch.sum(torch.exp(o - maxs), dim=-1, keepdim=True)) - o_x + maxs)
+
+
+class SGD(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3):
+        if lr < 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        defaults = {"lr": lr}
+        super().__init__(params, defaults)
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            lr = group["lr"]  # Get the learning rate.
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p]  # Get state associated with p.
+                t = state.get("t", 0)  # Get iteration number from the state, or 0.
+                grad = p.grad.data  # Get the gradient of loss with respect to p.
+                p.data -= lr / math.sqrt(t + 1) * grad  # Update weight tensor in-place.
+                state["t"] = t + 1  # Increment iteration number.
+        return loss
+
+
+def training_loop(lr):
+    print("===")
+    weights = torch.nn.Parameter(5 * torch.randn((10, 10)))
+    opt = SGD([weights], lr=lr)
+    for t in range(10):
+        opt.zero_grad()  # Reset the gradients for all learnable parameters.
+        loss = (weights**2).mean() # Compute a scalar loss value.
+        print(loss.cpu().item())
+        loss.backward() # Run backward pass, which computes gradients.
+        opt.step() # Run optimizer step.
+
+
 if __name__ == "__main__":
-    transformer_accounting(50257, 1024, 48, 1600, 25, 4288)
-    transformer_accounting(50257, 16384, 48, 1600, 25, 4288)
-    
+    # transformer_accounting(50257, 1024, 48, 1600, 25, 4288)
+    # transformer_accounting(50257, 16384, 48, 1600, 25, 4288)
+    training_loop(1)
+    training_loop(1e2)
+    training_loop(1e3)
