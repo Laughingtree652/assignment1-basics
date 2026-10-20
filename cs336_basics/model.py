@@ -122,20 +122,20 @@ class CausalMultiHeadSelfAttn(nn.Module):
         if token_positions is None:
             token_positions = torch.arange(seq_len, device=x.device)
         
-        mask = torch.tril(torch.ones((seq_len, seq_len), device=x.device, dtype=bool))
+        mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device, dtype=bool))
         q = self.linear_wq(x)
         k = self.linear_wk(x)
         v = self.linear_wv(x)
         
-        q = einops.rearrange(q, "... seq_len (self.num_heads d_k) -> ... self.num_heads seq_len d_k")
-        k = einops.rearrange(k, "... seq_len (self.num_heads d_k) -> ... self.num_heads seq_len d_k")
-        v = einops.rearrange(v, "... seq_len (self.num_heads d_v) -> ... self.num_heads seq_len d_v")
+        q = einops.rearrange(q, "... seq_len (h d_k) -> ... h seq_len d_k", h=self.num_heads)
+        k = einops.rearrange(k, "... seq_len (h d_k) -> ... h seq_len d_k", h=self.num_heads)
+        v = einops.rearrange(v, "... seq_len (h d_v) -> ... h seq_len d_v", h=self.num_heads)
         
         # apply rope
         q = self.rope(q, token_positions)
         k = self.rope(k, token_positions)
         
-        multi_head = einops.rearrange(scaled_dot_product_attention(q, k, v, mask), "... self.num_heads seq_len d_v -> ... seq_len (self.num_heads d_v)")
+        multi_head = einops.rearrange(scaled_dot_product_attention(q, k, v, mask), "... h seq_len d_v -> ... seq_len (h d_v)", h=self.num_heads)
         return self.linear_wo(multi_head)
     
 
