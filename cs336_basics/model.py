@@ -165,3 +165,40 @@ class TransformerLm(nn.Module):
         for _, l in enumerate(self.layers):
             y = l(y)
         return self.linear(self.norm(y))
+    
+
+def transformer_accounting(vocab_size: int, context_length: int, num_layers: int, d_model: int, num_heads: int, d_ff: int):
+    print("===")
+    embedding_paras = vocab_size * d_model  # embedding
+    blk_paras = num_layers * (d_model + d_model * d_model * 4 + d_model + d_ff * d_model * 3)
+    norm_paras = d_model
+    linear_paras = d_model * vocab_size
+    paras = embedding_paras + blk_paras + norm_paras + linear_paras
+    mem = paras * 4 / math.pow(1000, 3)
+    print("trainable parameters: ", paras)
+    print(f"memory required: {mem} GB")
+    
+    embedding_flops = 0  # embedding
+    d_k = d_model // num_heads
+    blk_linear_flops = 4 * 2 * context_length * d_model * d_model
+    # attn flops: 2 * 2 * context_length * context_length * d_model // num_heads * num_heads
+    blk_attn_flops = 2 * 2 * context_length * context_length * d_model 
+    blk_swiglu_flops = 3 * 2 * d_ff * d_model * context_length
+    blk_flops = num_layers * (blk_linear_flops + blk_attn_flops + blk_swiglu_flops)
+    norm_flops = 0
+    linear_flops = 2 * d_model * vocab_size * context_length
+    flops = embedding_flops + blk_flops + norm_flops + linear_flops
+    attn_flops = num_layers * 4 * context_length**2 * d_model
+    attn_flops_pct = attn_flops / flops
+    print("total flops: ", flops)
+    print("attn_flops: ", attn_flops)
+    print("attn_flops_pct: ", attn_flops_pct)
+    estimate = 2 * paras * context_length
+    print("estimate: ", estimate)
+    print("flops - estimate: ", flops - estimate)
+
+
+if __name__ == "__main__":
+    transformer_accounting(50257, 1024, 48, 1600, 25, 4288)
+    transformer_accounting(50257, 16384, 48, 1600, 25, 4288)
+    
