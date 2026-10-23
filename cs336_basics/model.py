@@ -181,7 +181,6 @@ def transformer_accounting(vocab_size: int, context_length: int, num_layers: int
     print(f"memory required: {mem} GB")
     
     embedding_flops = 0  # embedding
-    d_k = d_model // num_heads
     blk_linear_flops = 4 * 2 * context_length * d_model * d_model
     # attn flops: 2 * 2 * context_length * context_length * d_model // num_heads * num_heads
     blk_attn_flops = 2 * 2 * context_length * context_length * d_model 
@@ -198,6 +197,7 @@ def transformer_accounting(vocab_size: int, context_length: int, num_layers: int
     estimate = 2 * paras * context_length
     print("estimate: ", estimate)
     print("flops - estimate: ", flops - estimate)
+    return flops
 
 
 def cross_entropy(o: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -215,6 +215,7 @@ class SGD(torch.optim.Optimizer):
             raise ValueError(f"Invalid learning rate: {lr}")
         defaults = {"lr": lr}
         super().__init__(params, defaults)
+        
     def step(self, closure: Optional[Callable] = None):
         loss = None if closure is None else closure()
         for group in self.param_groups:
@@ -242,9 +243,77 @@ def training_loop(lr):
         opt.step() # Run optimizer step.
 
 
+class AdamW(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01):
+        if lr < 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if min(betas) < 0 or max(betas) >= 1:
+            raise ValueError(f"Invalid betas: {betas}")
+        if eps <= 0:
+            raise ValueError(f"Invalid eps: {eps}")
+        defaults = {"lr": lr, "betas": betas, "eps": eps, "weight_decay": weight_decay}
+        super().__init__(params, defaults)
+    
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            lr = group["lr"]
+            betas = group["betas"]
+            eps = group["eps"]
+            weight_decay = group["weight_decay"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p]
+                t = state.get("t", 0)
+                grad = p.grad.data
+                t = t + 1
+                lr_t = lr * math.sqrt(1 - betas[1]**t) / (1 - betas[0]**t)
+                p.data.add_(- lr * weight_decay * p.data)
+                if "m" not in state:
+                    m = state["m"] = torch.zeros_like(p)
+                    v = state["v"] = torch.zeros_like(p)
+                else:
+                    m = state["m"]
+                    v = state["v"]
+                m.mul_(betas[0]).add_(grad, alpha=1-betas[0])
+                v.mul_(betas[1]).add_(grad**2, alpha=1-betas[1])
+                p.data.add_(- lr_t * m / (torch.sqrt(v) + eps))
+                state["t"] = t
+        return loss
+
+    @staticmethod
+    def accounting(batch_size, vocab_size, context_length, num_layers, d_model, num_heads):
+        paras = (2 *vocab_size + 1) * d_model + num_layers * (2 * d_model +  12 * d_model**2)
+        grads = paras
+        opt_states = 2 * paras
+        activations = num_layers * (56/3 * batch_size * context_length * d_model + 2 * batch_size * num_heads * context_length**2) + batch_size * context_length * d_model + 2 * batch_size * context_length * vocab_size
+        
+        mem_paras = 4 * paras
+        mem_grads = 4 * grads
+        mem_opt_states = 4 * opt_states
+        mem_activations = 4 * activations
+        total = mem_paras + mem_grads + mem_opt_states + mem_activations
+        print("===")
+        print("mem para: ", mem_paras)
+        print("mem_grads: ", mem_grads)
+        print("mem_opt_states: ", mem_opt_states)
+        print("mem_activations: ", mem_activations)
+        print("total: ", total)
+        
+        one_step_adam_flops = paras * 14
+        total_flops = (3 * batch_size * transformer_accounting(vocab_size, context_length, num_layers, d_model, num_heads, 8 * d_model // 3) + one_step_adam_flops) * 4e5
+        secs = total_flops / (495e12 * 0.5)
+        print("secs: ", secs)
+        print("days: ", secs / (3600*24))
+
+
 if __name__ == "__main__":
     # transformer_accounting(50257, 1024, 48, 1600, 25, 4288)
     # transformer_accounting(50257, 16384, 48, 1600, 25, 4288)
-    training_loop(1)
-    training_loop(1e2)
-    training_loop(1e3)
+    # training_loop(1)
+    # training_loop(1e2)
+    # training_loop(1e3)
+    AdamW.accounting(1, 50257, 1024, 48, 1600, 25)
+    AdamW.accounting(2, 50257, 1024, 48, 1600, 25)
+    AdamW.accounting(1024, 50257, 1024, 48, 1600, 25)
