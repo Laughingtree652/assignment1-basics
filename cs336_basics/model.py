@@ -4,6 +4,9 @@ import torch
 import torch.nn as nn
 import einops
 import math
+import numpy as np
+import typing
+import os
 
 
 class Linear(nn.Module):
@@ -336,12 +339,75 @@ def gradient_clipping(paras, max_l2_norm: float, eps=1e-6):
             g.mul_(max_l2_norm / (l2_norm_sum + eps))
 
 
+def data_loading(x, batch_size: int, context_length: int, device) -> tuple[torch.Tensor, torch.Tensor]:
+    t_input_lst = []
+    t_target_lst = []
+    for _ in range(batch_size):
+        s = np.random.randint(0, len(x) - context_length)
+        inp = x[s:s+context_length]
+        tar = x[s+1:s+context_length+1]
+        t_inp = torch.tensor(inp, device=device)
+        t_tar = torch.tensor(tar, device=device)
+        t_input_lst.append(t_inp)
+        t_target_lst.append(t_tar)
+    t_input_final = torch.stack(t_input_lst, dim=0)
+    t_target_final = torch.stack(t_target_lst, dim=0)
+    return t_input_final, t_target_final
+
+
+def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, iteration: int, out: str | os.PathLike | typing.BinaryIO | typing.IO[bytes]):
+    model_state = model.state_dict()
+    optimizer_state = optimizer.state_dict()
+    result = {
+        "model_state": model_state,
+        "optimizer_state": optimizer_state, 
+        "it": iteration 
+    }
+    torch.save(result, out)
+    
+    
+def load_checkpoint(src, model: torch.nn.Module, optimizer: torch.optim.Optimizer):
+    obj = torch.load(src)
+    model.load_state_dict(obj["model_state"])
+    optimizer.load_state_dict(obj["optimizer_state"])
+    return obj["it"]
+
+
+def training_together(x, batch_size, context_length, device, vocab_size, num_layers, d_model, num_heads, d_ff, theta, max_norm, lr_max, lr_min, t_w, t_c, out, N, betas, eps, weight_decay):
+    model = TransformerLm(vocab_size=vocab_size, context_length=context_length, num_layers=num_layers, d_model=d_model, num_heads=num_heads, d_ff=d_ff, theta=theta, device=device)
+    optimizer = AdamW(model.parameters(), lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+    for t in range(t_c):
+        print("===")
+        print("iteration t: ", t)
+        inputs, targets = data_loading(x, batch_size=batch_size, context_length=context_length, device=device)
+        logits = model(inputs)
+        loss = cross_entropy(logits, targets)
+        print("current loss: ", loss)
+        loss.backward()
+        gradient_clipping(model.parameters(), max_norm)
+        lr = learning_rate_schedule(t, lr_max, lr_min, t_w, t_c)
+        for group in optimizer.param_groups:
+            if "lr" in group:
+                group["lr"] = lr
+        optimizer.step()
+        if t != 0 and t % N == 0:
+            save_checkpoint(model, optimizer, t, out + os.sep + f"iteration-{t}")
+        optimizer.zero_grad()
+
+
+def generate_input(context_length):
+    return np.random.randint(0, context_length, 10000)
+
+
 if __name__ == "__main__":
     # transformer_accounting(50257, 1024, 48, 1600, 25, 4288)
     # transformer_accounting(50257, 16384, 48, 1600, 25, 4288)
     # training_loop(1)
     # training_loop(1e2)
     # training_loop(1e3)
-    AdamW.accounting(1, 50257, 1024, 48, 1600, 25)
-    AdamW.accounting(2, 50257, 1024, 48, 1600, 25)
-    AdamW.accounting(1024, 50257, 1024, 48, 1600, 25)
+    # AdamW.accounting(1, 50257, 1024, 48, 1600, 25)
+    # AdamW.accounting(2, 50257, 1024, 48, 1600, 25)
+    # AdamW.accounting(1024, 50257, 1024, 48, 1600, 25)
+    # training_together(generate_input(1024), 4, 1024, "cpu", 50257, 48,
+    #                   1600, 25, 4288, )
+    pass
