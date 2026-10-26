@@ -306,6 +306,34 @@ class AdamW(torch.optim.Optimizer):
         secs = total_flops / (495e12 * 0.5)
         print("secs: ", secs)
         print("days: ", secs / (3600*24))
+        
+        
+def learning_rate_schedule(t: int, lr_max: float, lr_min: float, t_w: int, t_c: int):
+    if t < t_w:
+        return t / t_w * lr_max
+    elif t_w <= t <= t_c:
+        return lr_min + 1/2 * (1 + math.cos((t-t_w)*math.pi/(t_c-t_w)))*(lr_max - lr_min)
+    else:
+        return lr_min
+    
+    
+def gradient_clipping(paras, max_l2_norm: float, eps=1e-6):
+    norm_sum = 0
+    paras_list = list(paras)
+    for p in paras_list:
+        if p.grad is None:
+            continue
+        g = p.grad
+        norm = torch.norm(g)
+        norm_sum += norm**2
+    
+    l2_norm_sum = torch.sqrt(norm_sum)
+    if l2_norm_sum > max_l2_norm:
+        for p in paras_list:
+            if p.grad is None:
+                continue
+            g = p.grad
+            g.mul_(max_l2_norm / (l2_norm_sum + eps))
 
 
 if __name__ == "__main__":
